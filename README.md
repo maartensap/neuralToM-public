@@ -1,4 +1,6 @@
-# NeuralToM-v2
+# NeuralToM code repo with data
+
+*Note* need to create an `apiKeys.py` file with your openai api key stored in a `openai_api_key` variable.
 
 Example commands:
 
