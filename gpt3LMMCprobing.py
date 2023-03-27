@@ -149,6 +149,8 @@ def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=Tr
         # logprobs=mcProbing,
       )
       answer = r["choices"][0]["message"]["content"].strip()
+      # Trim irrelevant characters
+      answer = answer.replace(":","")
       if answer not in ["A", "B", "C"]:
         print(answer)
         answer=""
@@ -203,6 +205,11 @@ def LMProbeGPT3(exs,variant="ada"):
 def MCProbeGPT3(exs,nOptions=3,variant="ada"):
   tqdm.pandas(desc=f"Getting GPT3 ({variant}) preds",ascii=True)
   preds = exs.progress_apply(getGPT3prob,mcProbing=nOptions,variant=variant)
+  return preds
+
+def NLIProbeGPT3(exs,variant="ada"):
+  tqdm.pandas(desc=f"Getting GPT3 ({variant}) preds",ascii=True)
+  preds = exs.progress_apply(getGPT3prob,mcProbing=2,variant=variant)
   return preds
 
 def mapPred(x,answerMap):
