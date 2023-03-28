@@ -130,3 +130,6 @@ dmypy.json
 
 # apiKeys
 apiKeys.py
+
+# Predictions
+predictions/
