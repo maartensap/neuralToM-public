@@ -118,7 +118,7 @@ def _formatExample(r,cols,probing_type,onlyTrueAnswer=False):
     pref += "\n\n"
     pref += "Based on your answer, select the answers listed below:"
     out = pref + "\n" + "\n".join([l+": "+r[a] for l,a in zip("ABCDEF",candCols)])
-    out += "\nPlease only answer in terms of A, B, C"
+    out += "\nPlease select one most likely answer, and reply only with A, B, or C"
     out += "\nAnswer:"
     if onlyTrueAnswer:
       m = "ABCDEF"[[r[c] for c in candCols].index(r[answerCol])]
