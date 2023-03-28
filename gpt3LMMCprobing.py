@@ -152,6 +152,8 @@ def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=Tr
         # logprobs=mcProbing,
       )
       answer = r["choices"][0]["message"]["content"].strip()
+      # Trim irrelevant characters
+      answer = answer.replace(":","")
       if answer not in ["A", "B", "C"]:
         print(answer)
         answer=""
