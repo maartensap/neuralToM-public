@@ -125,7 +125,7 @@ def combineExamples(x):
   return out
 #######################################################################
 
-def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=True):
+def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=True,addMCsystemMessage=True):
   time.sleep(0.5)
   assert "turbo" not in variant or mcProbing > 0, variant+" model does not work with LM-probing"
 
@@ -137,7 +137,10 @@ def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=Tr
         # TODO: turn MC QA into question / answer ??
         turns = text.split("\n\n")
         turnsWithRoles = [{"role":sp,"content":msg} for t in turns for sp,msg in zip(["user","assistant"],t.split("\nAnswer:"))]
+        
         turnsWithRoles = [d for d in turnsWithRoles if d["content"] != ""]
+        if addMCsystemMessage:
+          turnsWithRoles = [{"role": "system", "content": "You are a multiple choice answering system."}] + turnsWithRoles
       else:
         turnsWithRoles = [{"role": "user", "content": text}]
       r = openai.ChatCompletion.create(
