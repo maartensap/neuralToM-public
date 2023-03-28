@@ -101,6 +101,29 @@ def _formatExample(r,cols,probing_type,onlyTrueAnswer=False):
     if onlyTrueAnswer:
       m = "ABCDEF"[[r[c] for c in candCols].index(r[answerCol])]
       out += " "+m
+
+  elif probing_type == "nli":
+    # Warning this part is not complete
+    pref = r[contextCol] + " " + r[questionCol]
+    out = pref + "\n\n" + "\n".join([l+": "+r[a] for l,a in zip("ABCDEF",candCols)])
+    out += "\nAnswer:"
+    if onlyTrueAnswer:
+      m = "ABCDEF"[[r[c] for c in candCols].index(r[answerCol])]
+      out += " "+m
+  
+  elif probing_type == "post_nli":
+    pref = r[contextCol] + " " + r[questionCol]
+    pref += "\nAnswer:"
+    pref += r["answer_for_nli"]
+    pref += "\n\n"
+    pref += "Based on your answer, select the answers listed below:"
+    out = pref + "\n" + "\n".join([l+": "+r[a] for l,a in zip("ABCDEF",candCols)])
+    out += "\nPlease only answer in terms of A, B, C"
+    out += "\nAnswer:"
+    if onlyTrueAnswer:
+      m = "ABCDEF"[[r[c] for c in candCols].index(r[answerCol])]
+      out += " "+m
+
   else:
     raise ValueError("Incorrect --probing_type, should be 'lm' or 'mc'")
     
@@ -123,6 +146,39 @@ def combineExamples(x):
     out = trn + "\n\n" + dev
 
   return out
+
+#######################################################################
+def getGPTanswers(text,variant="ada",attempt=0):
+  # Only chat mode so far
+  time.sleep(0.5)
+  text = text.strip()
+  
+  try:
+    if "turbo" in variant or "gpt-4" in variant:
+      turns = text.split("\n\n")
+      #turnsWithRoles = [{"role":sp,"content":msg} for t in turns for sp,msg in zip(["user","assistant"],t.split("\n")[0])]
+      #turnsWithRoles = [d for d in turnsWithRoles if d["content"] != ""]
+      turnsWithRoles = [{"role":"user","content":turns[0]}]
+      r = openai.ChatCompletion.create(
+        model=variant,
+        messages=turnsWithRoles,
+        # echo=mcProbing == 0, # only echo in LM-probing style
+        temperature=0,
+        max_tokens=100,
+        # logprobs=mcProbing,
+      )
+      return r["choices"][0]["message"]["content"].strip()
+  except (openai.error.APIError, openai.error.RateLimitError) as e:
+    print(e)
+    print("Sleeping for 10 seconds, attempt nb", attempt)
+    time.sleep(10)
+    if attempt>10:
+      print("Reached attempt limit, giving up")
+      return None
+    else:
+      print("Trying again")
+      return getGPTanswers(text,variant=variant,attempt=attempt+1)
+      
 #######################################################################
 
 def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=True):
@@ -145,7 +201,7 @@ def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=Tr
         messages=turnsWithRoles,
         # echo=mcProbing == 0, # only echo in LM-probing style
         temperature=0,
-        max_tokens=2,
+        max_tokens=1, # why 2 here?
         # logprobs=mcProbing,
       )
       answer = r["choices"][0]["message"]["content"].strip()
@@ -207,9 +263,9 @@ def MCProbeGPT3(exs,nOptions=3,variant="ada"):
   preds = exs.progress_apply(getGPT3prob,mcProbing=nOptions,variant=variant)
   return preds
 
-def NLIProbeGPT3(exs,variant="ada"):
+def NLIgenerate(exs,variant="ada"):
   tqdm.pandas(desc=f"Getting GPT3 ({variant}) preds",ascii=True)
-  preds = exs.progress_apply(getGPT3prob,mcProbing=2,variant=variant)
+  preds = exs.progress_apply(getGPTanswers,variant=variant)
   return preds
 
 def mapPred(x,answerMap):
@@ -268,6 +324,12 @@ def main(args):
     preds = LMProbeGPT3(devPrepped["formattedFullString"],variant=args.model_variant)
   elif args.probing_type=="mc":
     preds = MCProbeGPT3(devPrepped["formattedFullString"], nOptions=len(candCols),variant=args.model_variant)
+  elif args.probing_type=="nli":
+    preds = NLIgenerate(devPrepped["formattedFullString"],variant=args.model_variant)
+    devPrepped["answer_for_nli"] = preds
+    devPrepped["formattedFullString"] = devPrepped.apply(
+      _formatExample,cols=cols,probing_type="post_nli",axis=1)
+    preds = MCProbeGPT3(devPrepped["formattedFullString"],nOptions=len(candCols),variant=args.model_variant)
   else:
     raise ValueError("Incorrect --probing_type, should be 'lm' or 'mc'")
 
@@ -285,7 +347,8 @@ def main(args):
   
   if args.output_prediction_file:
     print("Exporting prediction results to "+args.output_prediction_file)
-    devPrepped.to_pickle(args.output_prediction_file)
+    #devPrepped.to_pickle(args.output_prediction_file)
+    devPrepped.to_csv(args.output_prediction_file)
 
     
 if __name__ == "__main__":
