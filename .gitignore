@@ -133,3 +133,6 @@ apiKeys.py
 
 # Predictions
 predictions/
+
+# Scripts
+scripts/

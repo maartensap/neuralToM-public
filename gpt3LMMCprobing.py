@@ -50,7 +50,8 @@ def loadTOMI(args):
     
     df["answerA"] = df["cands"].apply(lambda x: x[0])
     df["answerB"] = df["cands"].apply(lambda x: x[1])
-
+    if args.instructions:
+      df["story"] = df["story"].apply(lambda x: args.instructions+x)
   return trn, dev, ["story","question","answer","answerA","answerB"]
 
 ##############################################################
@@ -158,7 +159,7 @@ def getGPTanswers(text,variant="ada",attempt=0):
       turns = text.split("\n\n")
       #turnsWithRoles = [{"role":sp,"content":msg} for t in turns for sp,msg in zip(["user","assistant"],t.split("\n")[0])]
       #turnsWithRoles = [d for d in turnsWithRoles if d["content"] != ""]
-      turnsWithRoles = [{"role":"user","content":turns[0]}]
+      turnsWithRoles = [{"role":"user","content":(turns[0])}]
       r = openai.ChatCompletion.create(
         model=variant,
         messages=turnsWithRoles,
