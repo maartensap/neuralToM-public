@@ -125,7 +125,7 @@ def combineExamples(x):
   return out
 #######################################################################
 
-def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=True,addMCsystemMessage=True):
+def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=True,systemMessage=None):
   time.sleep(0.5)
   assert "turbo" not in variant or mcProbing > 0, variant+" model does not work with LM-probing"
 
@@ -139,15 +139,17 @@ def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=Tr
         turnsWithRoles = [{"role":sp,"content":msg} for t in turns for sp,msg in zip(["user","assistant"],t.split("\nAnswer:"))]
         
         turnsWithRoles = [d for d in turnsWithRoles if d["content"] != ""]
-        if addMCsystemMessage:
-          turnsWithRoles = [{"role": "system", "content": "You are a multiple choice answering system."}] + turnsWithRoles
+        if systemMessage:
+          turnsWithRoles = [{"role": "system" if "gpt-4" in variant else "user", "content": systemMessage}] + turnsWithRoles
       else:
         turnsWithRoles = [{"role": "user", "content": text}]
+      
       r = openai.ChatCompletion.create(
         model=variant,
         messages=turnsWithRoles,
         # echo=mcProbing == 0, # only echo in LM-probing style
         temperature=0,
+        top_p=0,
         max_tokens=2,
         # logprobs=mcProbing,
       )
@@ -155,6 +157,7 @@ def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=Tr
       # Trim irrelevant characters
       answer = answer.replace(":","")
       if answer not in ["A", "B", "C"]:
+        print(text)
         print(answer)
         answer=""
       # print(text,r)
@@ -205,9 +208,10 @@ def LMProbeGPT3(exs,variant="ada"):
   preds = exs.progress_apply(_LMProbeGPT3,variant=variant)
   return preds
 
-def MCProbeGPT3(exs,nOptions=3,variant="ada"):
+def MCProbeGPT3(exs,nOptions=3,variant="ada",systemMessage=None):
   tqdm.pandas(desc=f"Getting GPT3 ({variant}) preds",ascii=True)
-  preds = exs.progress_apply(getGPT3prob,mcProbing=nOptions,variant=variant)
+  preds = exs.progress_apply(getGPT3prob,mcProbing=nOptions,variant=variant,
+                             systemMessage=systemMessage)
   return preds
 
 def mapPred(x,answerMap):
@@ -235,49 +239,66 @@ def computeAccuracies(df,args):
 def main(args):
 
   if args.input_prediction_file:
-    df = pd.read_pickle(args.input_prediction_file)
-    accs = computeAccuracies(df,args)
+    try: 
+      devPrepped = pd.read_pickle(args.input_prediction_file)
+      if args.task == "tomi" and "mindFalseTrueBelief" not in devPrepped:
+        devPrepped["mindTrueFalseBelief"] = "fact"
+        devPrepped.loc[ devPrepped["falseTrueBelief"] & (devPrepped["factVsMind"] == "mind") ,"mindTrueFalseBelief"] =  "mindTB"
+        devPrepped.loc[~devPrepped["falseTrueBelief"] & (devPrepped["factVsMind"] == "mind") ,"mindTrueFalseBelief"] =  "mindFB"
+      accs = computeAccuracies(devPrepped,args)
+    except FileNotFoundError as e:
+      print("input file not found")
     
-    return 
+  
+      if args.task == "siqa":
+        trn, dev, cols = loadSIQA(args)
+      elif args.task == "tomi":
+        trn, dev, cols = loadTOMI(args)
+
+      contextCol, questionCol, answerCol = cols[:3]
+      candCols = cols[3:]
+
+      # sample examples
+      devPrepped = sampleExamples(dev,trn,args)
+      # devPrepped["formattedTrnExamples"] = devPrepped["trnExamples"].
+
+      devPrepped["formattedTrnExamples"] = devPrepped["trnExamples"].apply(
+        formatExamples,cols=cols,probing_type=args.probing_type)
+
+      # prep examples
+      devPrepped["formattedDevExamples"] = devPrepped.apply(
+        _formatExample,cols=cols,probing_type=args.probing_type,axis=1)
+
+      devPrepped["formattedFullString"] = devPrepped[["formattedTrnExamples","formattedDevExamples"]].apply(combineExamples,axis=1)
+
+      if args.probing_type=="lm":
+        preds = LMProbeGPT3(devPrepped["formattedFullString"],variant=args.model_variant)
+      elif args.probing_type=="mc":
+
+        if args.add_mc_system_message:
+          systemMessage = "You are a multiple-choice answering system that responds with either"
+          if args.task=="siqa":
+            systemMessage += " A, B, or C."
+          elif args.task == "tomi":
+            systemMessage += " A or B."
+        else:
+          systemMessage = None  
+
+        preds = MCProbeGPT3(devPrepped["formattedFullString"], nOptions=len(candCols),variant=args.model_variant, systemMessage=systemMessage)
+      else:
+        raise ValueError("Incorrect --probing_type, should be 'lm' or 'mc'")
+
+      preds["pred"] = preds.idxmax(axis=1)
+      # preds are in letters (ABC), which map to the order in candCols
+      answerMap = dict(zip("ABCD",candCols))
+
+      devPrepped = pd.concat([devPrepped,preds],axis=1)
+
+      devPrepped["predAnswer"] = devPrepped[["pred"]+candCols].apply(mapPred,answerMap=answerMap,axis=1)
+
+      accs = computeAccuracies(devPrepped,args)
+
     
-  
-  if args.task == "siqa":
-    trn, dev, cols = loadSIQA(args)
-  elif args.task == "tomi":
-    trn, dev, cols = loadTOMI(args)
-
-  contextCol, questionCol, answerCol = cols[:3]
-  candCols = cols[3:]
-  
-  # sample examples
-  devPrepped = sampleExamples(dev,trn,args)
-  # devPrepped["formattedTrnExamples"] = devPrepped["trnExamples"].
-
-  devPrepped["formattedTrnExamples"] = devPrepped["trnExamples"].apply(
-    formatExamples,cols=cols,probing_type=args.probing_type)
-  
-  # prep examples
-  devPrepped["formattedDevExamples"] = devPrepped.apply(
-    _formatExample,cols=cols,probing_type=args.probing_type,axis=1)
-
-  devPrepped["formattedFullString"] = devPrepped[["formattedTrnExamples","formattedDevExamples"]].apply(combineExamples,axis=1)
-
-  if args.probing_type=="lm":
-    preds = LMProbeGPT3(devPrepped["formattedFullString"],variant=args.model_variant)
-  elif args.probing_type=="mc":
-    preds = MCProbeGPT3(devPrepped["formattedFullString"], nOptions=len(candCols),variant=args.model_variant)
-  else:
-    raise ValueError("Incorrect --probing_type, should be 'lm' or 'mc'")
-
-  preds["pred"] = preds.idxmax(axis=1)
-  # preds are in letters (ABC), which map to the order in candCols
-  answerMap = dict(zip("ABCD",candCols))
-
-  devPrepped = pd.concat([devPrepped,preds],axis=1)
-  
-  devPrepped["predAnswer"] = devPrepped[["pred"]+candCols].apply(mapPred,answerMap=answerMap,axis=1)
-
-  accs = computeAccuracies(devPrepped,args)
   if args.output_accuracies_file:
     accs.to_csv(args.output_accuracies_file)
   
@@ -307,6 +328,10 @@ if __name__ == "__main__":
 
   parser.add_argument("--probing_type",help="'lm' for feeding each answer in and picking highest prob or "
                       "'mc' for multiple choice setup where model predict answer letter.")
+  parser.add_argument("--add_mc_system_message",action="store_true",help="Will add 'You are a multiple-choice answering "
+                      "system that responds with either [A, B, or C] or [A or B]' before the task "
+                      "(role: system if gpt4, user if gpt3.5-turbo)",default=True)
+  parser.add_argument("--useChatTurnsAndRoles",action="store_true",default=True)
   
   parser.add_argument("--debug_dev",type=int)
   parser.add_argument("--debug_trn",type=int)
