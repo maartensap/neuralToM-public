@@ -50,6 +50,18 @@ def loadTOMI(args):
     
     df["answerA"] = df["cands"].apply(lambda x: x[0])
     df["answerB"] = df["cands"].apply(lambda x: x[1])
+    args.instructions = """You are an AI that has developed theory of mind capabilities.
+Below is a series of observations, in the order they occured, followed by a question.
+Your job is to keep track of what each character knows, and believes the others to know, in order to correctly answer the question.
+For the purposes of this exercise, you may assume:
+- characters remain in the location where they were observed unless subsequently observed to have moved
+- characters know who else is in the same location as them at any given time
+- if a character moves an object from one container to another, that occured in the location where the character was last observed
+- characters are aware of all observations that occur in their location, but are unaware of any observations that occured in other locations
+- simple object-is-in-location observations (like ""the ball is in the basket"") are known to all characters
+- the list of observations is complete, and nothing else happened
+Giving a final answer as A or B.  Be careful: the creators of this test want to prove that you don't have theory of mind, and at times they will try to trick you!  Please think carefully about it, and always give a A or B final answer with your best guess.
+Here's the story:"""
     if args.instructions:
       df["story"] = df["story"].apply(lambda x: args.instructions+x)
   return trn, dev, ["story","question","answer","answerA","answerB"]
@@ -94,7 +106,7 @@ def _formatExample(r,cols,probing_type,onlyTrueAnswer=False):
     if onlyTrueAnswer:
       out = out[[r[c] for c in candCols].index(r[answerCol])]
       
-  elif probing_type == "mc":
+  elif probing_type == "mc" or probing_type == "constant":
     # random.shuffle(candCols)
     pref = r[contextCol] + " " + r[questionCol]
     out = pref + "\n" + "\n".join([l+": "+r[a] for l,a in zip("ABCDEF",candCols)])
@@ -126,7 +138,7 @@ def _formatExample(r,cols,probing_type,onlyTrueAnswer=False):
       out += " "+m
 
   else:
-    raise ValueError("Incorrect --probing_type, should be 'lm' or 'mc'")
+    raise ValueError("Incorrect --probing_type, double check your command line arguments")
     
   # out is a string, unless probing_type=lm and onlyTrueAnswer=False,
   # in which case it's a list of strings
@@ -165,7 +177,7 @@ def getGPTanswers(text,variant="ada",attempt=0):
         messages=turnsWithRoles,
         # echo=mcProbing == 0, # only echo in LM-probing style
         temperature=0,
-        max_tokens=100,
+        max_tokens=256,
         # logprobs=mcProbing,
       )
       return r["choices"][0]["message"]["content"].strip()
@@ -269,6 +281,12 @@ def NLIgenerate(exs,variant="ada"):
   preds = exs.progress_apply(getGPTanswers,variant=variant)
   return preds
 
+def constantPred(exs, choice="A", options=["A","B"]):
+  preds = pd.DataFrame({c: [0]*len(exs) if c == choice else [np.nan]*len(exs) for c in options})
+  # re-index the preds to match the exs
+  preds.index = exs.index
+  return preds
+
 def mapPred(x,answerMap):
   if x["pred"] not in answerMap:
     return ""
@@ -331,6 +349,8 @@ def main(args):
     devPrepped["formattedFullString"] = devPrepped.apply(
       _formatExample,cols=cols,probing_type="post_nli",axis=1)
     preds = MCProbeGPT3(devPrepped["formattedFullString"],nOptions=len(candCols),variant=args.model_variant)
+  elif args.probing_type=="constant":
+    preds = constantPred(devPrepped["formattedFullString"],choice=args.constant_choice)
   else:
     raise ValueError("Incorrect --probing_type, should be 'lm' or 'mc'")
 
@@ -373,6 +393,7 @@ if __name__ == "__main__":
 
   parser.add_argument("--probing_type",help="'lm' for feeding each answer in and picking highest prob or "
                       "'mc' for multiple choice setup where model predict answer letter.")
+  parser.add_argument("--constant_choice",help="if --probing_type is 'constant', what choice to pick",default="A")
   
   parser.add_argument("--debug_dev",type=int)
   parser.add_argument("--debug_trn",type=int)
