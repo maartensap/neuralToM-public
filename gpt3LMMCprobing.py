@@ -281,7 +281,7 @@ def NLIgenerate(exs,variant="ada"):
   preds = exs.progress_apply(getGPTanswers,variant=variant)
   return preds
 
-def constantPred(exs, choice="A", options=["A","B"]):
+def constantPred(exs, choice="A", options=["A","B", "C"]):
   preds = pd.DataFrame({c: [0]*len(exs) if c == choice else [np.nan]*len(exs) for c in options})
   # re-index the preds to match the exs
   preds.index = exs.index
