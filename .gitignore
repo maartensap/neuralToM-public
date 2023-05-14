@@ -136,3 +136,5 @@ predictions/
 
 # Scripts
 scripts/
+
+.vscode/
