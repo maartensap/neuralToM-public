@@ -1,4 +1,5 @@
 import sys, os
+import re
 from IPython import embed
 import numpy as np
 import pandas as pd
@@ -29,7 +30,9 @@ def loadSIQA(args):
   for df in [ trn, dev]:
     df["answer"] = df[["label_ix","answerA","answerB","answerC"]].apply(
       lambda x: x[1:][x[0]],axis=1)
-  
+
+  if args.instructions:
+      df["context"] = df["context"].apply(lambda x: args.instructions+x)
 
   return trn, dev, ["context","question","answer","answerA","answerB","answerC"]
 
@@ -50,18 +53,6 @@ def loadTOMI(args):
     
     df["answerA"] = df["cands"].apply(lambda x: x[0])
     df["answerB"] = df["cands"].apply(lambda x: x[1])
-    args.instructions = """You are an AI that has developed theory of mind capabilities.
-Below is a series of observations, in the order they occured, followed by a question.
-Your job is to keep track of what each character knows, and believes the others to know, in order to correctly answer the question.
-For the purposes of this exercise, you may assume:
-- characters remain in the location where they were observed unless subsequently observed to have moved
-- characters know who else is in the same location as them at any given time
-- if a character moves an object from one container to another, that occured in the location where the character was last observed
-- characters are aware of all observations that occur in their location, but are unaware of any observations that occured in other locations
-- simple object-is-in-location observations (like ""the ball is in the basket"") are known to all characters
-- the list of observations is complete, and nothing else happened
-Giving a final answer as A or B.  Be careful: the creators of this test want to prove that you don't have theory of mind, and at times they will try to trick you!  Please think carefully about it, and always give a A or B final answer with your best guess.
-Here's the story:"""
     if args.instructions:
       df["story"] = df["story"].apply(lambda x: args.instructions+x)
   return trn, dev, ["story","question","answer","answerA","answerB"]
@@ -111,6 +102,14 @@ def _formatExample(r,cols,probing_type,onlyTrueAnswer=False):
     pref = r[contextCol] + " " + r[questionCol]
     out = pref + "\n" + "\n".join([l+": "+r[a] for l,a in zip("ABCDEF",candCols)])
     out += "\nAnswer:"
+    if onlyTrueAnswer:
+      m = "ABCDEF"[[r[c] for c in candCols].index(r[answerCol])]
+      out += " "+m
+
+  elif probing_type == "cot":
+    pref = r[contextCol] + " " + r[questionCol]
+    out = pref + "\n" + "\n".join([l+": "+r[a] for l,a in zip("ABCDEF",candCols)])
+    out += "\nBegin the reasoning."
     if onlyTrueAnswer:
       m = "ABCDEF"[[r[c] for c in candCols].index(r[answerCol])]
       out += " "+m
@@ -194,12 +193,12 @@ def getGPTanswers(text,variant="ada",attempt=0):
       
 #######################################################################
 
-def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=True):
+def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,reason=False,useChatTurnsAndRoles=True):
   time.sleep(0.5)
   assert "turbo" not in variant or mcProbing > 0, variant+" model does not work with LM-probing"
 
   text = text.strip()
-  
+  max_tokens = 256 if reason else 1 
   try:
     if "turbo" in variant or "gpt-4" in variant:
       if useChatTurnsAndRoles:
@@ -214,15 +213,28 @@ def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=Tr
         messages=turnsWithRoles,
         # echo=mcProbing == 0, # only echo in LM-probing style
         temperature=0,
-        max_tokens=1, # why 2 here?
+        max_tokens=max_tokens,
         # logprobs=mcProbing,
       )
       answer = r["choices"][0]["message"]["content"].strip()
+      if reason:
+        # find answer <answer></answer>
+        match = re.findall(r"<answer>(.*?)</answer>|[Tt]he answer is ([A-Z])|[Aa]nswer: ([A-Z])|<answer>([A-Z])",answer)
+        if match:
+          print(match)
+          for m in match:
+            for g in m:
+              if g:
+                answer = g
       # Trim irrelevant characters
-      answer = answer.replace(":","")
+      else:
+        answer = answer.replace(":","")
       if answer not in ["A", "B", "C"]:
-        print(answer)
-        answer=""
+        if answer.startswith("A") or answer.startswith("B") or answer.startswith("C"):
+          answer = answer[0]
+        else:
+          print("Could not find answer in",answer)
+          answer=""
       # print(text,r)
 
       r["choices"][0]["logprobs"] = {"top_logprobs":[{answer: 0}]}
@@ -232,9 +244,28 @@ def getGPT3prob(text,mcProbing=0,variant="ada",attempt=0,useChatTurnsAndRoles=Tr
         prompt=text,
         echo=mcProbing == 0, # only echo in LM-probing style
         temperature=0,
-        max_tokens=1,
+        max_tokens=max_tokens,
         logprobs=mcProbing,
       )
+      if reason:
+        answer = r["choices"][0]["text"].strip()
+        # find answer <answer></answer>
+        match = re.findall(r"<answer>(.*?)</answer>|[Tt]he answer is ([A-Z])|[Aa]nswer: ([A-Z])",answer)
+        if match:
+          print(match)
+          for m in match:
+            for g in m:
+              if g:
+                answer = g
+        # Trim irrelevant characters
+        if answer not in ["A", "B", "C"]:
+          if answer.startswith("A") or answer.startswith("B") or answer.startswith("C"):
+            answer = answer[0]
+          else:
+            print("Could not find answer in",answer)
+            answer=""
+        r["choices"][0]["logprobs"] = {"top_logprobs":[{answer: 0}]}
+
   except (openai.error.APIError, openai.error.RateLimitError) as e:
     print(e)
     print("Sleeping for 10 seconds, attempt nb", attempt)
@@ -274,6 +305,11 @@ def LMProbeGPT3(exs,variant="ada"):
 def MCProbeGPT3(exs,nOptions=3,variant="ada"):
   tqdm.pandas(desc=f"Getting GPT3 ({variant}) preds",ascii=True)
   preds = exs.progress_apply(getGPT3prob,mcProbing=nOptions,variant=variant)
+  return preds
+
+def CoTProbeGPT3(exs,nOptions=3,variant="ada"):
+  tqdm.pandas(desc=f"Getting GPT3 ({variant}) preds",ascii=True)
+  preds = exs.progress_apply(getGPT3prob,mcProbing=nOptions,variant=variant, reason=True)
   return preds
 
 def NLIgenerate(exs,variant="ada"):
@@ -349,6 +385,8 @@ def main(args):
     devPrepped["formattedFullString"] = devPrepped.apply(
       _formatExample,cols=cols,probing_type="post_nli",axis=1)
     preds = MCProbeGPT3(devPrepped["formattedFullString"],nOptions=len(candCols),variant=args.model_variant)
+  elif args.probing_type=="cot":
+    preds = CoTProbeGPT3(devPrepped["formattedFullString"],nOptions=len(candCols),variant=args.model_variant)
   elif args.probing_type=="constant":
     preds = constantPred(devPrepped["formattedFullString"],choice=args.constant_choice)
   else:
