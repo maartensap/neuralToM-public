@@ -9,27 +9,28 @@ import random
 from sklearn.metrics import classification_report, accuracy_score
 import time
 
-np.random.seed(345)
-random.seed(345)
+# np.random.seed(345)
+# random.seed(345)
 
 import openai
 from apiKeys import openai_api_key
 openai.api_key = openai_api_key
 
 def loadSIQA(args):
+
   trn = pd.read_csv("siqa.trnOnlyWDims.csv")
   if args.debug_trn:
     trn = trn.sample(args.debug_trn)  
   
   dev = pd.read_json("socialIWa_v1.4_dev_wDims.jsonl",lines=True)
-  #dev = pd.read_json("socialIWa_v1.4_tst_wDims.jsonl",lines=True)
+  # dev = pd.read_json("socialIWa_v1.4_tst_wDims.jsonl",lines=True)
+  # dev = pd.read_json("socialIWa_v1.4_tstSecret_wDims.jsonl",lines=True)
   if args.debug_dev:
     dev = dev.sample(args.debug_dev)
 
   for df in [ trn, dev]:
     df["answer"] = df[["label_ix","answerA","answerB","answerC"]].apply(
       lambda x: x[1:][x[0]],axis=1)
-  
 
   return trn, dev, ["context","question","answer","answerA","answerB","answerC"]
 
@@ -237,7 +238,6 @@ def computeAccuracies(df,args):
 
 ##############################################################
 def main(args):
-
   if args.input_prediction_file:
     try: 
       devPrepped = pd.read_pickle(args.input_prediction_file)
@@ -248,55 +248,57 @@ def main(args):
       accs = computeAccuracies(devPrepped,args)
     except FileNotFoundError as e:
       print("input file not found")
+    args.input_prediction_file = None
     
-  
-      if args.task == "siqa":
-        trn, dev, cols = loadSIQA(args)
-      elif args.task == "tomi":
-        trn, dev, cols = loadTOMI(args)
+  if not args.input_prediction_file:
+    if args.task == "siqa":
+      trn, dev, cols = loadSIQA(args)
+        
+    elif args.task == "tomi":
+      trn, dev, cols = loadTOMI(args)
 
-      contextCol, questionCol, answerCol = cols[:3]
-      candCols = cols[3:]
+    contextCol, questionCol, answerCol = cols[:3]
+    candCols = cols[3:]
 
-      # sample examples
-      devPrepped = sampleExamples(dev,trn,args)
-      # devPrepped["formattedTrnExamples"] = devPrepped["trnExamples"].
+    # sample examples
+    devPrepped = sampleExamples(dev,trn,args)
+    # devPrepped["formattedTrnExamples"] = devPrepped["trnExamples"].
 
-      devPrepped["formattedTrnExamples"] = devPrepped["trnExamples"].apply(
-        formatExamples,cols=cols,probing_type=args.probing_type)
+    devPrepped["formattedTrnExamples"] = devPrepped["trnExamples"].apply(
+      formatExamples,cols=cols,probing_type=args.probing_type)
 
-      # prep examples
-      devPrepped["formattedDevExamples"] = devPrepped.apply(
-        _formatExample,cols=cols,probing_type=args.probing_type,axis=1)
+    # prep examples
+    devPrepped["formattedDevExamples"] = devPrepped.apply(
+      _formatExample,cols=cols,probing_type=args.probing_type,axis=1)
 
-      devPrepped["formattedFullString"] = devPrepped[["formattedTrnExamples","formattedDevExamples"]].apply(combineExamples,axis=1)
+    devPrepped["formattedFullString"] = devPrepped[["formattedTrnExamples","formattedDevExamples"]].apply(combineExamples,axis=1)
 
-      if args.probing_type=="lm":
-        preds = LMProbeGPT3(devPrepped["formattedFullString"],variant=args.model_variant)
-      elif args.probing_type=="mc":
+    if args.probing_type=="lm":
+      preds = LMProbeGPT3(devPrepped["formattedFullString"],variant=args.model_variant)
+    elif args.probing_type=="mc":
 
-        if args.add_mc_system_message:
-          systemMessage = "You are a multiple-choice answering system that responds with either"
-          if args.task=="siqa":
-            systemMessage += " A, B, or C."
-          elif args.task == "tomi":
-            systemMessage += " A or B."
-        else:
-          systemMessage = None  
-
-        preds = MCProbeGPT3(devPrepped["formattedFullString"], nOptions=len(candCols),variant=args.model_variant, systemMessage=systemMessage)
+      if args.add_mc_system_message:
+        systemMessage = "You are a multiple-choice answering system that responds with either"
+        if args.task=="siqa":
+          systemMessage += " A, B, or C."
+        elif args.task == "tomi":
+          systemMessage += " A or B."
       else:
-        raise ValueError("Incorrect --probing_type, should be 'lm' or 'mc'")
+        systemMessage = None  
 
-      preds["pred"] = preds.idxmax(axis=1)
-      # preds are in letters (ABC), which map to the order in candCols
-      answerMap = dict(zip("ABCD",candCols))
+      preds = MCProbeGPT3(devPrepped["formattedFullString"], nOptions=len(candCols),variant=args.model_variant, systemMessage=systemMessage)
+    else:
+      raise ValueError("Incorrect --probing_type, should be 'lm' or 'mc'")
 
-      devPrepped = pd.concat([devPrepped,preds],axis=1)
+    preds["pred"] = preds.idxmax(axis=1)
+    # preds are in letters (ABC), which map to the order in candCols
+    answerMap = dict(zip("ABCD",candCols))
 
-      devPrepped["predAnswer"] = devPrepped[["pred"]+candCols].apply(mapPred,answerMap=answerMap,axis=1)
+    devPrepped = pd.concat([devPrepped,preds],axis=1)
 
-      accs = computeAccuracies(devPrepped,args)
+    devPrepped["predAnswer"] = devPrepped[["pred"]+candCols].apply(mapPred,answerMap=answerMap,axis=1)
+
+    accs = computeAccuracies(devPrepped,args)
 
     
   if args.output_accuracies_file:
@@ -342,7 +344,14 @@ if __name__ == "__main__":
 
   parser.add_argument("--input_prediction_file")
 
+  parser.add_argument("--random_seed",type=int,default=345)
+
   parser.add_argument("--group_accuracy_by",nargs="+")
   args = parser.parse_args()
+
+  np.random.seed(args.random_seed)
+  random.seed(args.random_seed)
+
   print(args)
   main(args)
+  
